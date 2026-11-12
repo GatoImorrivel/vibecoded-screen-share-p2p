@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.screenshareapp.ScreenShare</id>
+  <name>screenshare</name>
+  <summary>Peer-to-peer screen sharing with audio</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+  <description>
+    <p>
+      Share your screen or a single window, with its audio, directly with a few
+      friends. No accounts and no servers: create a session, send the invite
+      code, and everyone can watch and share at the same time.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.screenshareapp.ScreenShare.desktop</launchable>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-12"/>
+  </releases>
+</component>

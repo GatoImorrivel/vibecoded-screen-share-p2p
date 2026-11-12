@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=screenshare
+Comment=Peer-to-peer screen sharing with audio
+Exec=screenshareapp
+Icon=io.github.screenshareapp.ScreenShare
+Terminal=false
+Categories=Network;VideoConference;
+Keywords=screen;share;stream;p2p;
+StartupWMClass=io.github.screenshareapp.ScreenShare

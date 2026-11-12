@@ -1,0 +1,45 @@
+[workspace]
+resolver = "3"
+members = ["crates/app", "crates/net", "crates/media", "crates/capture"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+screenshare-net = { path = "crates/net" }
+screenshare-media = { path = "crates/media" }
+screenshare-capture = { path = "crates/capture" }
+
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+bytes = "1"
+rand = "0.9"
+data-encoding = "2"
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+
+iced = { version = "0.14", features = ["wgpu", "tokio", "image", "advanced"] }
+iroh = "1.4"
+iroh-gossip = "0.102"
+n0-future = "0.3"
+openh264 = "0.9"
+opus = "0.4"
+cpal = "0.18"
+directories = "6"
+toml = "1"
+bytemuck = { version = "1", features = ["derive"] }
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = "symbols"
