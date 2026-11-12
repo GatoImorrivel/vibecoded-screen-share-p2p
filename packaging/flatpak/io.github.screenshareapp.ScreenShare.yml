@@ -1,0 +1,43 @@
+# Build locally:
+#   python3 flatpak-cargo-generator.py ../../Cargo.lock -o cargo-sources.json
+#   flatpak-builder --user --install --force-clean build io.github.screenshareapp.ScreenShare.yml
+#
+# flatpak-cargo-generator.py comes from https://github.com/flatpak/flatpak-builder-tools
+# and must be re-run whenever Cargo.lock changes.
+app-id: io.github.screenshareapp.ScreenShare
+runtime: org.freedesktop.Platform
+runtime-version: "25.08"
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.llvm20
+command: screenshareapp
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Audio playback and capturing other applications' audio streams.
+  - --filesystem=xdg-run/pipewire-0
+  # Screen and window capture go through the ScreenCast portal (no extra permission).
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm20/bin
+  prepend-ld-library-path: /usr/lib/sdk/llvm20/lib
+  env:
+    CARGO_HOME: /run/build/screenshareapp/cargo
+    LIBCLANG_PATH: /usr/lib/sdk/llvm20/lib
+modules:
+  - name: screenshareapp
+    buildsystem: simple
+    build-commands:
+      - cargo --offline fetch --manifest-path Cargo.toml --verbose
+      - cargo --offline build --release --locked -p screenshareapp
+      - install -Dm755 target/release/screenshareapp -t /app/bin/
+      - install -Dm644 packaging/linux/io.github.screenshareapp.ScreenShare.desktop -t /app/share/applications/
+      - install -Dm644 packaging/linux/io.github.screenshareapp.ScreenShare.metainfo.xml -t /app/share/metainfo/
+      - install -Dm644 packaging/linux/io.github.screenshareapp.ScreenShare.svg -t /app/share/icons/hicolor/scalable/apps/
+    sources:
+      - type: dir
+        path: ../..
+      - cargo-sources.json

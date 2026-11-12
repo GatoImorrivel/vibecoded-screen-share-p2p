@@ -1,0 +1,99 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  WiX v3 source for the Windows installer. Build with:
+    cargo install cargo-wix
+    cargo wix -p screenshareapp
+-->
+
+<?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64 ?>
+    <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
+<?else ?>
+    <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
+<?endif ?>
+
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+    <Product
+        Id='*'
+        Name='screenshare'
+        UpgradeCode='E1C2C504-E09A-4549-86E6-E8A491647EFF'
+        Manufacturer='screenshare contributors'
+        Language='1033'
+        Codepage='1252'
+        Version='$(var.Version)'>
+
+        <Package Id='*'
+            Keywords='Installer'
+            Description='Peer-to-peer screen sharing with audio'
+            Manufacturer='screenshare contributors'
+            InstallerVersion='450'
+            Languages='1033'
+            Compressed='yes'
+            InstallScope='perMachine'
+            SummaryCodepage='1252'
+            />
+
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
+
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
+        <Property Id='DiskPrompt' Value='screenshare Installation'/>
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
+                <Directory Id='APPLICATIONFOLDER' Name='screenshare'>
+                    <Component Id='binary0' Guid='*'>
+                        <File
+                            Id='exe0'
+                            Name='screenshareapp.exe'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\screenshareapp.exe'
+                            KeyPath='yes'/>
+                    </Component>
+                </Directory>
+            </Directory>
+            <Directory Id='ProgramMenuFolder'>
+                <Directory Id='ApplicationProgramsFolder' Name='screenshare'>
+                    <Component Id='StartMenuShortcut' Guid='522F09F9-BE04-4F51-AEEC-0214B93287BD'>
+                        <Shortcut
+                            Id='AppShortcut'
+                            Name='screenshare'
+                            Description='Peer-to-peer screen sharing'
+                            Target='[APPLICATIONFOLDER]screenshareapp.exe'
+                            WorkingDirectory='APPLICATIONFOLDER'/>
+                        <RemoveFolder Id='CleanUpShortCut' On='uninstall'/>
+                        <RegistryValue
+                            Root='HKCU'
+                            Key='Software\screenshare\screenshare'
+                            Name='installed'
+                            Type='integer'
+                            Value='1'
+                            KeyPath='yes'/>
+                    </Component>
+                </Directory>
+            </Directory>
+        </Directory>
+
+        <Feature
+            Id='Binaries'
+            Title='Application'
+            Description='Installs screenshare.'
+            Level='1'
+            ConfigurableDirectory='APPLICATIONFOLDER'
+            AllowAdvertise='no'
+            Display='expand'
+            Absent='disallow'>
+            <ComponentRef Id='binary0'/>
+            <ComponentRef Id='StartMenuShortcut'/>
+        </Feature>
+
+        <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
+
+        <UI>
+            <UIRef Id='WixUI_InstallDir'/>
+            <Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='InstallDirDlg' Order='99'>1</Publish>
+            <Publish Dialog='InstallDirDlg' Control='Back' Event='NewDialog' Value='WelcomeDlg' Order='99'>1</Publish>
+        </UI>
+        <Property Id='WIXUI_INSTALLDIR' Value='APPLICATIONFOLDER'/>
+    </Product>
+</Wix>

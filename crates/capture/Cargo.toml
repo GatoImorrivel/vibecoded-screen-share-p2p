@@ -1,0 +1,29 @@
+[package]
+name = "screenshare-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+screenshare-media = { workspace = true, default-features = false }
+anyhow.workspace = true
+tracing.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+xcap = "0.9"
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.14", default-features = false, features = ["async-io", "screencast"] }
+pipewire = "0.10"
+pollster = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+windows-capture = "2"
+wasapi = "0.27"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
