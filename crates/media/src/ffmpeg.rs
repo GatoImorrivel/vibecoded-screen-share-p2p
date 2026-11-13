@@ -772,7 +772,10 @@ impl FfDecoder {
                     }
                 }
                 let Some(surface) = surface else {
-                    bail!("the {} decoder has no {label} support in this build", self.codec.name());
+                    bail!(
+                        "the {} decoder has no {label} support in this build",
+                        self.codec.name()
+                    );
                 };
                 self.device = create_device(kind)?;
                 ctx.hw_device_ctx = ff::av_buffer_ref(self.device);

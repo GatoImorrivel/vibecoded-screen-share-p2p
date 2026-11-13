@@ -554,9 +554,9 @@ impl App {
         let stream_id = share.stream_id;
         let codec = Codec::from_name(&share.codec);
         session.declined.remove(&stream_id);
-        let Some(slot) =
-            self.engine
-                .watch(peer, stream_id, self.settings.hardware_video, codec)
+        let Some(slot) = self
+            .engine
+            .watch(peer, stream_id, self.settings.hardware_video, codec)
         else {
             return;
         };

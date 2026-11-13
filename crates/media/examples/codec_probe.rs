@@ -27,7 +27,10 @@ fn main() -> anyhow::Result<()> {
             "\n== {} preferred, {width}x{height} ==",
             if hardware { "GPU" } else { "CPU" }
         );
-        println!("encoder backend: {}", encoder_backend(hardware, Codec::H264));
+        println!(
+            "encoder backend: {}",
+            encoder_backend(hardware, Codec::H264)
+        );
         let mut encoder = open_encoder(EncoderPrefs {
             hardware,
             codec: Codec::H264,
