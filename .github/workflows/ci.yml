@@ -6,6 +6,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Pin so the FFmpeg cache key stays stable across runs.
+  FFMPEG_TAG: n8.1-latest
+  FFMPEG_VARIANT: lgpl-shared-8.1
 
 jobs:
   build:
@@ -23,58 +26,106 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang cmake pkg-config nasm \
+            clang cmake pkg-config nasm lld \
             libpipewire-0.3-dev libspa-0.2-dev libasound2-dev \
             libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxrandr-dev \
             libgbm-dev libdrm-dev libegl1-mesa-dev libwayland-dev libxkbcommon-dev \
-            libdbus-1-dev
+            libdbus-1-dev libfuse2
 
       # nasm so openh264 builds its assembly (otherwise it's ~2x slower).
       - name: Install nasm (Windows)
         if: runner.os == 'Windows'
         run: choco install nasm -y
 
+      - name: FFmpeg cache
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ffmpeg
+          key: ffmpeg-${{ runner.os }}-${{ env.FFMPEG_TAG }}-${{ env.FFMPEG_VARIANT }}
+
       # LGPL shared FFmpeg for GPU video (NVENC, AMF, Quick Sync, VAAPI, ...).
       # Its libraries ship inside the MSI, portable zip and AppImage. On Linux,
       # libva and the GPU drivers are loaded from the user's system at runtime.
       - name: Fetch FFmpeg
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         shell: bash
         run: |
           base=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest
           dir="$RUNNER_TEMP/ffmpeg"
           mkdir -p "$dir"
           if [ "$RUNNER_OS" = Windows ]; then
-            curl -fsSL -o "$RUNNER_TEMP/ffmpeg.zip" "$base/ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip"
+            curl -fsSL -o "$RUNNER_TEMP/ffmpeg.zip" \
+              "$base/ffmpeg-${FFMPEG_TAG}-win64-${FFMPEG_VARIANT}.zip"
             unzip -q "$RUNNER_TEMP/ffmpeg.zip" -d "$RUNNER_TEMP/ffmpeg-unpack"
+            # Archive has a single top-level directory; flatten into $dir.
             mv "$RUNNER_TEMP"/ffmpeg-unpack/*/* "$dir"
+          else
+            curl -fsSL "$base/ffmpeg-${FFMPEG_TAG}-linux64-${FFMPEG_VARIANT}.tar.xz" \
+              | tar -xJ -C "$dir" --strip-components=1
+          fi
+
+      - name: Export FFmpeg env
+        shell: bash
+        run: |
+          dir="$RUNNER_TEMP/ffmpeg"
+          echo "FFMPEG_DIR=$dir" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" = Windows ]; then
             echo "$dir/bin" >> "$GITHUB_PATH"
             echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
           else
-            curl -fsSL "$base/ffmpeg-n8.1-latest-linux64-lgpl-shared-8.1.tar.xz" \
-              | tar -xJ -C "$dir" --strip-components=1
             echo "LD_LIBRARY_PATH=$dir/lib" >> "$GITHUB_ENV"
-            # Other -sys crates add the system library dir; search ours first.
-            echo "RUSTFLAGS=-L native=$dir/lib" >> "$GITHUB_ENV"
+            # Prefer our FFmpeg over the system one; use lld for faster links.
+            echo "RUSTFLAGS=-C link-arg=-fuse-ld=lld -L native=$dir/lib" >> "$GITHUB_ENV"
           fi
-          echo "FFMPEG_DIR=$dir" >> "$GITHUB_ENV"
+
+      - name: Cache linuxdeploy
+        if: runner.os == 'Linux'
+        id: cache-linuxdeploy
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.cache/linuxdeploy
+          key: linuxdeploy-x86_64-continuous
+
+      - name: Fetch linuxdeploy
+        if: runner.os == 'Linux' && steps.cache-linuxdeploy.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .cache/linuxdeploy
+          curl -fsSL -o .cache/linuxdeploy/linuxdeploy-x86_64.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x .cache/linuxdeploy/linuxdeploy-x86_64.AppImage
 
       - uses: dtolnay/rust-toolchain@stable
+        if: runner.os == 'Linux'
         with:
           components: rustfmt, clippy
 
+      - uses: dtolnay/rust-toolchain@stable
+        if: runner.os == 'Windows'
+
       - uses: Swatinem/rust-cache@v2
 
+      # Lint and test once on Linux; Windows only builds the release artifacts.
       - name: Format
+        if: runner.os == 'Linux'
         run: cargo fmt --all --check
 
       - name: Clippy
+        if: runner.os == 'Linux'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Test
+        if: runner.os == 'Linux'
         run: cargo test --workspace --locked
 
       - name: Build release
         run: cargo build --release --locked -p screenshareapp
+
+      - name: Install cargo-wix
+        if: runner.os == 'Windows'
+        uses: taiki-e/cache-cargo-install-action@v2
+        with:
+          tool: cargo-wix@0.3.9
 
       - name: Build MSI and portable zip
         if: runner.os == 'Windows'
@@ -83,7 +134,6 @@ jobs:
           avcodec=$(cd "$FFMPEG_DIR/bin" && ls avcodec-*.dll)
           avutil=$(cd "$FFMPEG_DIR/bin" && ls avutil-*.dll)
           cp "$FFMPEG_DIR/bin/$avcodec" "$FFMPEG_DIR/bin/$avutil" target/release/
-          cargo install cargo-wix --locked
           cargo wix -p screenshareapp --no-build --nocapture \
             -C "-dAvcodecDll=$avcodec" -C "-dAvutilDll=$avutil" \
             --output target/wix/screenshare.msi
@@ -95,9 +145,9 @@ jobs:
 
       - name: Build AppImage
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get install -y --no-install-recommends libfuse2
-          bash packaging/appimage/build.sh
+        env:
+          LINUXDEPLOY: ${{ github.workspace }}/.cache/linuxdeploy/linuxdeploy-x86_64.AppImage
+        run: bash packaging/appimage/build.sh
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
