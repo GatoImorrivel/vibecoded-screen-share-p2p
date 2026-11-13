@@ -34,10 +34,35 @@ fn init_logging() {
 /// Backends listed in `SCREENSHARE_SKIP_BACKENDS` (comma-separated labels such
 /// as `NVENC,NVDEC`) are never tried; useful to diagnose a misbehaving driver.
 fn skipped(label: &str) -> bool {
+    // BtbN's shared FFmpeg uses libva "implib" stubs that `abort()` the process
+    // when `libva-drm.so` cannot be dlopen'd. Never touch VAAPI without DRM.
+    if label.eq_ignore_ascii_case("VAAPI") && !vaapi_probeable() {
+        return true;
+    }
     std::env::var("SCREENSHARE_SKIP_BACKENDS").is_ok_and(|list| {
         list.split(',')
             .any(|s| s.trim().eq_ignore_ascii_case(label))
     })
+}
+
+/// True when a DRM device exists so VAAPI can be opened without BtbN's libva
+/// stubs aborting the process (as they do on headless CI).
+fn vaapi_probeable() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(entries) = std::fs::read_dir("/dev/dri") else {
+            return false;
+        };
+        entries.filter_map(|e| e.ok()).any(|e| {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("renderD") || name.starts_with("card")
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
 }
 
 fn av_error(code: c_int) -> anyhow::Error {

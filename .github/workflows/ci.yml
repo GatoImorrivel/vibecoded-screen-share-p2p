@@ -25,12 +25,13 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
+          # libva* : BtbN FFmpeg dlopens these; without them a VAAPI probe aborts the process.
           sudo apt-get install -y --no-install-recommends \
             clang cmake pkg-config nasm lld \
             libpipewire-0.3-dev libspa-0.2-dev libasound2-dev \
             libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxrandr-dev \
             libgbm-dev libdrm-dev libegl1-mesa-dev libwayland-dev libxkbcommon-dev \
-            libdbus-1-dev libfuse2
+            libdbus-1-dev libfuse2 libva2 libva-drm2
 
       # nasm so openh264 builds its assembly (otherwise it's ~2x slower).
       - name: Install nasm (Windows)
