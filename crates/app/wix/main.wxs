@@ -2,7 +2,14 @@
 <!--
   WiX v3 source for the Windows installer. Build with:
     cargo install cargo-wix
-    cargo wix -p screenshareapp -C -dAvcodecDll=avcodec-62.dll -C -dAvutilDll=avutil-60.dll
+    cargo wix -p screenshareapp \
+      -C -dAvcodecDll=avcodec-62.dll \
+      -C -dAvutilDll=avutil-60.dll \
+      -C -dSwresampleDll=swresample-6.dll \
+      -C -dSwscaleDll=swscale-9.dll \
+      -C -dAvformatDll=avformat-62.dll \
+      -C -dAvfilterDll=avfilter-11.dll \
+      -C -dAvdeviceDll=avdevice-62.dll
   after copying those FFmpeg DLLs next to the release exe (see .github/workflows/ci.yml).
   Without the -d flags the installer omits them, and the exe will not start
   unless it was built without the default "hw" feature (software video only).
@@ -54,22 +61,34 @@
                             KeyPath='yes'/>
                     </Component>
                     <?ifdef AvcodecDll ?>
-                    <!-- FFmpeg (LGPL) for GPU video; names come from CI via -dAvcodecDll/-dAvutilDll. -->
+                    <!-- FFmpeg LGPL shared runtime; BtbN avcodec depends on swresample+avutil. -->
                     <Component Id='avcodec' Guid='*'>
-                        <File
-                            Id='avcodec'
-                            Name='$(var.AvcodecDll)'
-                            DiskId='1'
-                            Source='$(var.CargoTargetBinDir)\$(var.AvcodecDll)'
-                            KeyPath='yes'/>
+                        <File Id='avcodec' Name='$(var.AvcodecDll)' DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\$(var.AvcodecDll)' KeyPath='yes'/>
                     </Component>
                     <Component Id='avutil' Guid='*'>
-                        <File
-                            Id='avutil'
-                            Name='$(var.AvutilDll)'
-                            DiskId='1'
-                            Source='$(var.CargoTargetBinDir)\$(var.AvutilDll)'
-                            KeyPath='yes'/>
+                        <File Id='avutil' Name='$(var.AvutilDll)' DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\$(var.AvutilDll)' KeyPath='yes'/>
+                    </Component>
+                    <Component Id='swresample' Guid='*'>
+                        <File Id='swresample' Name='$(var.SwresampleDll)' DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\$(var.SwresampleDll)' KeyPath='yes'/>
+                    </Component>
+                    <Component Id='swscale' Guid='*'>
+                        <File Id='swscale' Name='$(var.SwscaleDll)' DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\$(var.SwscaleDll)' KeyPath='yes'/>
+                    </Component>
+                    <Component Id='avformat' Guid='*'>
+                        <File Id='avformat' Name='$(var.AvformatDll)' DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\$(var.AvformatDll)' KeyPath='yes'/>
+                    </Component>
+                    <Component Id='avfilter' Guid='*'>
+                        <File Id='avfilter' Name='$(var.AvfilterDll)' DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\$(var.AvfilterDll)' KeyPath='yes'/>
+                    </Component>
+                    <Component Id='avdevice' Guid='*'>
+                        <File Id='avdevice' Name='$(var.AvdeviceDll)' DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\$(var.AvdeviceDll)' KeyPath='yes'/>
                     </Component>
                     <?endif ?>
                 </Directory>
@@ -109,6 +128,11 @@
             <?ifdef AvcodecDll ?>
             <ComponentRef Id='avcodec'/>
             <ComponentRef Id='avutil'/>
+            <ComponentRef Id='swresample'/>
+            <ComponentRef Id='swscale'/>
+            <ComponentRef Id='avformat'/>
+            <ComponentRef Id='avfilter'/>
+            <ComponentRef Id='avdevice'/>
             <?endif ?>
             <ComponentRef Id='StartMenuShortcut'/>
         </Feature>

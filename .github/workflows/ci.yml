@@ -132,14 +132,28 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          avcodec=$(cd "$FFMPEG_DIR/bin" && ls avcodec-*.dll)
-          avutil=$(cd "$FFMPEG_DIR/bin" && ls avutil-*.dll)
-          cp "$FFMPEG_DIR/bin/$avcodec" "$FFMPEG_DIR/bin/$avutil" target/release/
+          # BtbN's shared avcodec imports swresample (and the full set is small);
+          # shipping only avcodec+avutil left Windows unable to start.
+          cp "$FFMPEG_DIR"/bin/av*.dll "$FFMPEG_DIR"/bin/sw*.dll target/release/
+          avcodec=$(cd target/release && ls avcodec-*.dll)
+          avutil=$(cd target/release && ls avutil-*.dll)
+          swresample=$(cd target/release && ls swresample-*.dll)
+          swscale=$(cd target/release && ls swscale-*.dll)
+          avformat=$(cd target/release && ls avformat-*.dll)
+          avfilter=$(cd target/release && ls avfilter-*.dll)
+          avdevice=$(cd target/release && ls avdevice-*.dll)
           cargo wix -p screenshareapp --no-build --nocapture \
-            -C "-dAvcodecDll=$avcodec" -C "-dAvutilDll=$avutil" \
+            -C "-dAvcodecDll=$avcodec" \
+            -C "-dAvutilDll=$avutil" \
+            -C "-dSwresampleDll=$swresample" \
+            -C "-dSwscaleDll=$swscale" \
+            -C "-dAvformatDll=$avformat" \
+            -C "-dAvfilterDll=$avfilter" \
+            -C "-dAvdeviceDll=$avdevice" \
             --output target/wix/screenshare.msi
           mkdir -p target/portable/screenshare
-          cp target/release/screenshareapp.exe target/release/$avcodec target/release/$avutil \
+          cp target/release/screenshareapp.exe \
+            target/release/av*.dll target/release/sw*.dll \
             target/portable/screenshare/
           cp "$FFMPEG_DIR/LICENSE.txt" target/portable/screenshare/FFMPEG-LICENSE.txt
           (cd target/portable && 7z a -bd screenshare-windows-portable.zip screenshare >/dev/null)
