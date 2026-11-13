@@ -24,8 +24,13 @@ pub enum EncoderControl {
 
 /// Frames queued per subscriber before the sharer starts dropping for that subscriber.
 const SUBSCRIBER_QUEUE: usize = 4;
-const FRAME_SEND_TIMEOUT: Duration = Duration::from_millis(1500);
+/// How long a single frame may take to send before we abandon it. Kept short so
+/// a slow network does not stall every newer frame behind one stuck write.
+const FRAME_SEND_TIMEOUT: Duration = Duration::from_millis(400);
 const KEYFRAME_MIN_INTERVAL: Duration = Duration::from_millis(500);
+/// Bitrate cuts are expensive (some encoders reopen); space them out.
+const BITRATE_CUT_INTERVAL: Duration = Duration::from_secs(3);
+const BITRATE_RAISE_INTERVAL: Duration = Duration::from_secs(5);
 
 struct Subscriber {
     tx: mpsc::Sender<Arc<VideoPacket>>,
@@ -34,7 +39,7 @@ struct Subscriber {
 }
 
 /// Additive-increase / multiplicative-decrease bitrate control driven by
-/// subscriber queue pressure, so the slowest subscriber sets the target.
+/// real send failures, not by local queue pressure.
 struct RateController {
     target: u32,
     min: u32,
@@ -46,7 +51,7 @@ struct RateController {
 impl RateController {
     fn on_congestion(&mut self, now: Instant) -> Option<u32> {
         self.last_congestion = now;
-        if now.duration_since(self.last_change) < Duration::from_secs(1) {
+        if now.duration_since(self.last_change) < BITRATE_CUT_INTERVAL {
             return None;
         }
         let next = ((self.target as f64 * 0.7) as u32).max(self.min);
@@ -54,8 +59,8 @@ impl RateController {
     }
 
     fn on_tick(&mut self, now: Instant) -> Option<u32> {
-        if now.duration_since(self.last_congestion) < Duration::from_secs(5)
-            || now.duration_since(self.last_change) < Duration::from_secs(5)
+        if now.duration_since(self.last_congestion) < BITRATE_RAISE_INTERVAL
+            || now.duration_since(self.last_change) < BITRATE_RAISE_INTERVAL
         {
             return None;
         }
@@ -93,6 +98,9 @@ impl ActiveShare {
         let _ = self.control.send(EncoderControl::Keyframe);
     }
 
+    /// A frame send timed out or failed: the peer cannot keep up. Cut bitrate
+    /// and make them wait for a keyframe. Local queue Full is *not* this —
+    /// that only drops the newest frame for latency.
     fn congested(&mut self, peer: PeerId, now: Instant) {
         if let Some(sub) = self.subscribers.get_mut(&peer) {
             sub.waiting_keyframe = true;
@@ -225,24 +233,25 @@ impl ShareHandle {
     }
 
     /// Queues an encoded frame for every subscriber that can take it.
+    ///
+    /// A full local queue only drops this frame for that subscriber. Treating
+    /// Full as congestion used to cut bitrate and force keyframes, which on
+    /// Linux (VAAPI/software encoder reopen) permanently collapsed FPS.
     pub fn send_video(&self, packet: VideoPacket) {
         let packet = Arc::new(packet);
         let now = Instant::now();
         let mut guard = self.registry.active.lock().unwrap();
         let Some(share) = guard.as_mut() else { return };
-        let mut congested = Vec::new();
-        for (peer, sub) in share.subscribers.iter_mut() {
+        for sub in share.subscribers.values_mut() {
             if sub.waiting_keyframe && !packet.header.keyframe {
                 continue;
             }
             match sub.tx.try_send(packet.clone()) {
                 Ok(()) => sub.waiting_keyframe = false,
-                Err(mpsc::error::TrySendError::Full(_)) => congested.push(*peer),
+                // Latency shed: the sender will pick up a later frame.
+                Err(mpsc::error::TrySendError::Full(_)) => {}
                 Err(mpsc::error::TrySendError::Closed(_)) => {}
             }
-        }
-        for peer in congested {
-            share.congested(peer, now);
         }
         if let Some(bitrate) = share.rate.on_tick(now) {
             tracing::debug!("raising bitrate to {bitrate}");
@@ -347,21 +356,39 @@ async fn video_sender(
     peer: PeerId,
     stream_id: u64,
 ) {
-    while let Some(packet) = rx.recv().await {
-        let result = tokio::time::timeout(FRAME_SEND_TIMEOUT, async {
-            let mut send = conn.open_uni().await?;
-            // Newer frames take priority over a stalled older one.
-            let _ = send.set_priority((packet.header.pts_us / 1000) as i32);
-            let res = write_video(&mut send, &packet).await;
-            if res.is_err() {
-                let _ = send.reset(0u32.into());
+    while let Some(mut packet) = rx.recv().await {
+        // Prefer the newest waiting frame so a slow send does not deliver a
+        // backlog of already-stale pictures.
+        while let Ok(newer) = rx.try_recv() {
+            packet = newer;
+        }
+
+        let mut send = match tokio::time::timeout(FRAME_SEND_TIMEOUT, conn.open_uni()).await {
+            Ok(Ok(send)) => send,
+            Ok(Err(err)) => {
+                if conn.close_reason().is_some() {
+                    break;
+                }
+                tracing::debug!("opening video stream failed: {err:#}");
+                if let Some(reg) = registry.upgrade() {
+                    reg.congested(peer, stream_id);
+                }
+                continue;
             }
-            res
-        })
-        .await;
-        match result {
+            Err(_) => {
+                tracing::debug!("opening video stream timed out for {}", peer.fmt_short());
+                if let Some(reg) = registry.upgrade() {
+                    reg.congested(peer, stream_id);
+                }
+                continue;
+            }
+        };
+        // Newer frames take priority over a stalled older one on the same connection.
+        let _ = send.set_priority((packet.header.pts_us / 1000) as i32);
+        match tokio::time::timeout(FRAME_SEND_TIMEOUT, write_video(&mut send, &packet)).await {
             Ok(Ok(())) => {}
             Ok(Err(err)) => {
+                let _ = send.reset(0u32.into());
                 if conn.close_reason().is_some() {
                     break;
                 }
@@ -371,6 +398,8 @@ async fn video_sender(
                 }
             }
             Err(_) => {
+                // Abort the stuck stream so it stops competing for bandwidth.
+                let _ = send.reset(0u32.into());
                 tracing::debug!("frame send timed out for {}", peer.fmt_short());
                 if let Some(reg) = registry.upgrade() {
                     reg.congested(peer, stream_id);

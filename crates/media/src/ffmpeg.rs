@@ -105,6 +105,7 @@ fn nvenc(codec: &'static CStr, codec_id: Codec, label: &'static str) -> EncoderB
     }
 }
 
+#[cfg(target_os = "linux")]
 fn vaapi(codec: &'static CStr, codec_id: Codec, label: &'static str) -> EncoderBackend {
     EncoderBackend {
         codec,
@@ -501,21 +502,14 @@ impl VideoEncoder for FfEncoder {
             return Ok(());
         }
         self.prefs.bitrate = bitrate_bps;
-        if self.backend.label == "NVENC" {
-            // NVENC reconfigures its rate control in place on the next frame.
-            unsafe {
-                (*self.ctx).bit_rate = bitrate_bps as i64;
-                (*self.ctx).rc_max_rate = bitrate_bps as i64;
-                (*self.ctx).rc_buffer_size = (bitrate_bps / 2) as c_int;
-            }
-            return Ok(());
-        }
+        // Update rate control in place. Reopening (especially VAAPI) stalls the
+        // encode loop for many frames and was the main cause of FPS collapsing
+        // after a few minutes of AIMD bitrate cuts on Linux.
         unsafe {
-            self.release();
-            self.last_pts = -1;
-            self.init()?;
+            (*self.ctx).bit_rate = bitrate_bps as i64;
+            (*self.ctx).rc_max_rate = bitrate_bps as i64;
+            (*self.ctx).rc_buffer_size = (bitrate_bps / 2) as c_int;
         }
-        self.force_keyframe = true;
         Ok(())
     }
 
@@ -994,14 +988,17 @@ mod tests {
                 pts_us: i * 33_333,
             });
             if let Some(out) = enc.encode(&frame).unwrap() {
-                if i == 0 || i == 10 {
-                    assert!(out.keyframe, "frame {i} should be a keyframe");
+                if i == 0 {
+                    assert!(out.keyframe, "first frame should be a keyframe");
                     assert!(nal_units(&out.data).any(|(k, _)| k == 7));
                 }
                 if let Some(f) = dec.decode(&out.data, out.pts_us).unwrap() {
                     assert_eq!((f.width(), f.height()), (w, h));
                     decoded += 1;
                 }
+            }
+            if i == 10 {
+                assert_eq!(enc.bitrate(), 400_000);
             }
         }
         assert!(decoded >= 15, "decoded {decoded} frames");

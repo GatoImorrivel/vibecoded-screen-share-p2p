@@ -19,7 +19,9 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 const AUDIO_BITRATE: i32 = 128_000;
-const MIN_BITRATE: u32 = 300_000;
+/// Floor for AIMD. Below this, software encoders start skipping frames and
+/// screen content looks frozen.
+const MIN_BITRATE: u32 = 800_000;
 /// Re-send the last frame this often when the screen is static, so new
 /// subscribers and keyframe requests are served promptly.
 const REFRESH: Duration = Duration::from_secs(1);
@@ -144,22 +146,24 @@ fn video_loop(
     let mut want_keyframe = false;
 
     while !stop.load(Ordering::Relaxed) {
+        // Coalesce a backlog of AIMD updates so one drain cannot reopen or
+        // retarget the encoder many times in a row.
+        let mut pending_bitrate = None;
         while let Some(control) = handle.try_control() {
             match control {
                 EncoderControl::Keyframe => want_keyframe = true,
-                EncoderControl::Bitrate(b) => {
-                    bitrate = b;
-                    // Changing the bitrate rebuilds the encoder and costs a
-                    // keyframe: apply decreases at once, increases only when large.
-                    if let Some((enc, _)) = &mut encoder {
-                        let current = enc.bitrate();
-                        let worthwhile =
-                            b < current || b >= current + current * 3 / 10 || b == max_bitrate;
-                        if worthwhile && let Err(err) = enc.set_bitrate(b) {
-                            tracing::warn!("changing bitrate failed: {err:#}");
-                            encoder = None;
-                        }
-                    }
+                EncoderControl::Bitrate(b) => pending_bitrate = Some(b),
+            }
+        }
+        if let Some(b) = pending_bitrate {
+            bitrate = b;
+            if let Some((enc, _)) = &mut encoder {
+                let current = enc.bitrate();
+                // Apply decreases at once; raise only when the jump is meaningful.
+                let worthwhile = b < current || b >= current + current * 3 / 10 || b == max_bitrate;
+                if worthwhile && let Err(err) = enc.set_bitrate(b) {
+                    tracing::warn!("changing bitrate failed: {err:#}");
+                    encoder = None;
                 }
             }
         }

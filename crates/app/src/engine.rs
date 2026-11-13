@@ -348,61 +348,91 @@ async fn pump(
     ui_tx: mpsc::UnboundedSender<UiEvent>,
     generation: u64,
 ) {
-    while let Some(event) = events.recv().await {
-        let ui = {
+    while let Some(first) = events.recv().await {
+        // Drain everything already queued. An unbounded FIFO of video frames
+        // was the compounding-delay bug: the decoder replayed history while
+        // new frames waited behind it. Jump to the latest keyframe per peer.
+        let mut batch = vec![first];
+        while let Ok(event) = events.try_recv() {
+            batch.push(event);
+        }
+
+        let mut video: HashMap<PeerId, screenshare_net::VideoPacket> = HashMap::new();
+        let mut ui_events = Vec::new();
+        {
             let s = state.lock();
             if s.generation != generation {
                 return;
             }
-            match event {
-                NetEvent::Video { peer, packet } => {
-                    if let Some(stream) = s.remote.get(&peer)
-                        && stream.stream_id == packet.header.stream_id
-                    {
-                        stream.push_video(packet);
+            for event in batch {
+                match event {
+                    NetEvent::Video { peer, packet } => {
+                        video
+                            .entry(peer)
+                            .and_modify(|prev| keep_latest_decodable(prev, packet.clone()))
+                            .or_insert(packet);
                     }
-                    None
-                }
-                NetEvent::Audio { peer, packet } => {
-                    if let Some(stream) = s.remote.get(&peer)
-                        && stream.stream_id == packet.stream_id
-                    {
-                        stream.push_audio(packet);
+                    NetEvent::Audio { peer, packet } => {
+                        if let Some(stream) = s.remote.get(&peer)
+                            && stream.stream_id == packet.stream_id
+                        {
+                            stream.push_audio(packet);
+                        }
                     }
-                    None
-                }
-                NetEvent::Connected => Some(UiEvent::Connected),
-                NetEvent::Disconnected => Some(UiEvent::Disconnected),
-                NetEvent::PeerUpdated {
-                    peer,
-                    nickname,
-                    share,
-                } => Some(UiEvent::PeerUpdated {
-                    peer,
-                    nickname,
-                    share,
-                }),
-                NetEvent::PeerLeft { peer } => Some(UiEvent::PeerLeft { peer }),
-                NetEvent::ViewerClosed { peer } => {
-                    if let Some(session) = &s.session {
-                        session.drop_viewer(peer);
+                    NetEvent::Connected => ui_events.push(UiEvent::Connected),
+                    NetEvent::Disconnected => ui_events.push(UiEvent::Disconnected),
+                    NetEvent::PeerUpdated {
+                        peer,
+                        nickname,
+                        share,
+                    } => ui_events.push(UiEvent::PeerUpdated {
+                        peer,
+                        nickname,
+                        share,
+                    }),
+                    NetEvent::PeerLeft { peer } => ui_events.push(UiEvent::PeerLeft { peer }),
+                    NetEvent::ViewerClosed { peer } => {
+                        if let Some(session) = &s.session {
+                            session.drop_viewer(peer);
+                        }
+                        if let Some(stream) = s.remote.get(&peer) {
+                            tracing::info!("media connection to {peer} closed, retrying");
+                            tokio::spawn(resubscribe(
+                                state.clone(),
+                                peer,
+                                stream.stream_id,
+                                generation,
+                            ));
+                        }
                     }
-                    if let Some(stream) = s.remote.get(&peer) {
-                        tracing::info!("media connection to {peer} closed, retrying");
-                        tokio::spawn(resubscribe(
-                            state.clone(),
-                            peer,
-                            stream.stream_id,
-                            generation,
-                        ));
-                    }
-                    None
                 }
             }
-        };
-        if let Some(ui) = ui {
+            for (peer, packet) in video {
+                if let Some(stream) = s.remote.get(&peer)
+                    && stream.stream_id == packet.header.stream_id
+                {
+                    stream.push_video(packet);
+                }
+            }
+        }
+        for ui in ui_events {
             let _ = ui_tx.send(ui);
         }
+    }
+}
+
+/// When draining a backlog, prefer the latest keyframe so the decoder can
+/// restart without replaying every stale P-frame.
+fn keep_latest_decodable(
+    prev: &mut screenshare_net::VideoPacket,
+    new: screenshare_net::VideoPacket,
+) {
+    // Keep a keyframe over later P-frames so a drained backlog can restart the
+    // GOP; otherwise keep the newest P-frame.
+    let take =
+        new.header.keyframe || (!prev.header.keyframe && new.header.pts_us >= prev.header.pts_us);
+    if take {
+        *prev = new;
     }
 }
 
