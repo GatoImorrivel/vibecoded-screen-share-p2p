@@ -12,6 +12,7 @@ use engine::{AudioMode, Engine, SessionInfo, ShareStarted, UiEvent};
 use iced::widget::image;
 use iced::{Subscription, Task, keyboard, window};
 use screenshare_capture::{AudioApp, PickerKind, Source, VideoRequest};
+use screenshare_media::video::Codec;
 use screenshare_net::{PeerId, ShareInfo, ShareKind};
 use settings::{Settings, ThemeChoice};
 use share::ShareConfig;
@@ -65,7 +66,11 @@ pub struct Watch {
 pub enum MyShare {
     Idle,
     Starting,
-    Live { kind: ShareKind, title: String },
+    Live {
+        kind: ShareKind,
+        title: String,
+        encoder: String,
+    },
 }
 
 pub struct PickerSource {
@@ -127,6 +132,7 @@ pub enum Message {
     SetFps(u32),
     SetMaxHeight(u32),
     SetBitrate(u32),
+    SetHardwareVideo(bool),
     Engine(UiEvent),
     CopyInvite,
     ClearCopied,
@@ -224,6 +230,8 @@ impl App {
             max_fps: self.settings.max_fps,
             max_size: self.settings.max_size(),
             max_bitrate: self.settings.max_bitrate_kbps * 1000,
+            hardware: self.settings.hardware_video,
+            codec: Codec::default(),
         }
     }
 
@@ -302,6 +310,7 @@ impl App {
             Message::SetFps(fps) => self.settings.max_fps = fps,
             Message::SetMaxHeight(h) => self.settings.max_height = h,
             Message::SetBitrate(kbps) => self.settings.max_bitrate_kbps = kbps,
+            Message::SetHardwareVideo(on) => self.settings.hardware_video = on,
             Message::Engine(event) => return self.on_engine(event),
             Message::CopyInvite => {
                 if let (Some(ticket), Some(session)) = (self.engine.ticket(), &mut self.session) {
@@ -419,6 +428,7 @@ impl App {
                         session.my_share = MyShare::Live {
                             kind: started.kind,
                             title: started.title,
+                            encoder: started.encoder,
                         };
                         if let Some(err) = started.audio_error {
                             self.error = Some(err);
@@ -538,16 +548,16 @@ impl App {
         let Some(session) = &mut self.session else {
             return;
         };
-        let Some(stream_id) = session
-            .peers
-            .get(&peer)
-            .and_then(|p| p.share.as_ref())
-            .map(|s| s.stream_id)
-        else {
+        let Some(share) = session.peers.get(&peer).and_then(|p| p.share.as_ref()) else {
             return;
         };
+        let stream_id = share.stream_id;
+        let codec = Codec::from_name(&share.codec);
         session.declined.remove(&stream_id);
-        let Some(slot) = self.engine.watch(peer, stream_id) else {
+        let Some(slot) =
+            self.engine
+                .watch(peer, stream_id, self.settings.hardware_video, codec)
+        else {
             return;
         };
         if let Some(w) = session.watching.iter_mut().find(|w| w.peer == peer) {

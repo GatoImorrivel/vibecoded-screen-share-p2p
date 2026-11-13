@@ -27,7 +27,57 @@ build-options:
   env:
     CARGO_HOME: /run/build/screenshareapp/cargo
     LIBCLANG_PATH: /usr/lib/sdk/llvm20/lib
+    # Link our FFmpeg below, not the runtime's copy.
+    RUSTFLAGS: -L native=/app/lib
 modules:
+  # NVENC/NVDEC headers; the driver libraries come from the host through the
+  # org.freedesktop.Platform.GL.nvidia extension. 12.1 works with drivers >= 530.
+  - name: nv-codec-headers
+    buildsystem: simple
+    build-commands:
+      - make PREFIX=/app install
+    cleanup: ["*"]
+    sources:
+      - type: git
+        url: https://github.com/FFmpeg/nv-codec-headers.git
+        tag: n12.1.14.0
+        commit: 1889e62e2d35ff7aa9baca2bceb14f053785e6f1
+
+  # LGPL FFmpeg with only what the app uses: H.264 decoding (software, NVDEC,
+  # VAAPI) and GPU H.264 encoding (NVENC, VAAPI).
+  - name: ffmpeg
+    config-opts:
+      - --enable-shared
+      - --disable-static
+      - --disable-programs
+      - --disable-doc
+      - --disable-avdevice
+      - --disable-avformat
+      - --disable-avfilter
+      - --disable-swscale
+      - --disable-swresample
+      - --disable-everything
+      - --disable-autodetect
+      - --enable-decoder=h264
+      - --enable-parser=h264
+      - --enable-ffnvcodec
+      - --enable-nvenc
+      - --enable-nvdec
+      - --enable-cuda
+      - --enable-vaapi
+      - --enable-libdrm
+      - --enable-encoder=h264_nvenc,h264_vaapi
+      - --enable-hwaccel=h264_nvdec,h264_vaapi
+    cleanup:
+      - /include
+      - /lib/pkgconfig
+      - /share
+    sources:
+      - type: git
+        url: https://github.com/FFmpeg/FFmpeg.git
+        tag: n8.1
+        commit: 9047fa1b084f76b1b4d065af2d743df1b40dfb56
+
   - name: screenshareapp
     buildsystem: simple
     build-commands:

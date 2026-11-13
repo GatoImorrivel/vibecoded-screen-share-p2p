@@ -5,10 +5,13 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = ["codecs"]
+default = ["codecs", "hw"]
 # H.264/Opus coding and audio playback. Without it only frame types and
 # pixel conversion are available, which is all the capture crate needs.
 codecs = ["dep:openh264", "dep:opus", "dep:cpal", "dep:parking_lot"]
+# GPU H.264 encode/decode (NVENC, AMF, VAAPI, D3D11VA, ...) through FFmpeg,
+# which must be installed or bundled. Without it video is software-only.
+hw = ["codecs", "dep:ffmpeg-sys-next"]
 
 [dependencies]
 anyhow.workspace = true
@@ -17,6 +20,14 @@ parking_lot = { workspace = true, optional = true }
 openh264 = { workspace = true, optional = true }
 opus = { workspace = true, optional = true }
 cpal = { workspace = true, optional = true }
+ffmpeg-sys-next = { workspace = true, optional = true }
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+
+[[example]]
+name = "codec_probe"
+required-features = ["codecs"]
 
 # Native PipeWire output, falling back to ALSA when PipeWire is not running.
 [target.'cfg(target_os = "linux")'.dependencies]

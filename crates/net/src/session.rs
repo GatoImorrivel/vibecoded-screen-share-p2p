@@ -1,6 +1,6 @@
 use crate::media::{MediaProtocol, ShareHandle, ShareRegistry, Viewer};
 use crate::protocol::{
-    AudioPacket, ControlMsg, GossipMsg, MEDIA_ALPN, Presence, ShareInfo, ShareKind, VideoPacket,
+    AudioPacket, ControlMsg, GossipMsg, MEDIA_ALPN, Presence, ShareDetails, ShareInfo, VideoPacket,
     sign_gossip, verify_gossip,
 };
 use crate::ticket::Ticket;
@@ -204,16 +204,16 @@ impl Session {
     /// Starts sharing. The share stays announced until the handle is dropped.
     ///
     /// `bitrate` is `(initial, min, max)` in bits per second.
-    pub fn start_share(
-        &self,
-        kind: ShareKind,
-        title: String,
-        width: u32,
-        height: u32,
-        has_audio: bool,
-        bitrate: (u32, u32, u32),
-    ) -> ShareHandle {
+    pub fn start_share(&self, details: ShareDetails, bitrate: (u32, u32, u32)) -> ShareHandle {
         let stream_id: u64 = rand::random();
+        let ShareDetails {
+            kind,
+            title,
+            width,
+            height,
+            has_audio,
+            codec,
+        } = details;
         self.inner.state.lock().unwrap().share = Some(ShareInfo {
             stream_id,
             kind,
@@ -221,6 +221,7 @@ impl Session {
             width,
             height,
             has_audio,
+            codec,
         });
         let weak = Arc::downgrade(&self.inner);
         let handle = ShareHandle::new(

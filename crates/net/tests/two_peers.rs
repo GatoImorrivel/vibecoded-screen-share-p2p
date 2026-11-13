@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use screenshare_net::protocol::VideoHeader;
-use screenshare_net::{NetEvent, Session, ShareKind, Ticket, VideoPacket};
+use screenshare_net::{NetEvent, Session, ShareDetails, ShareKind, Ticket, VideoPacket};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -37,11 +37,14 @@ async fn presence_share_and_media() {
     .await;
 
     let share = alice.start_share(
-        ShareKind::Monitor,
-        "Screen 1".into(),
-        640,
-        480,
-        true,
+        ShareDetails {
+            kind: ShareKind::Monitor,
+            title: "Screen 1".into(),
+            width: 640,
+            height: 480,
+            has_audio: true,
+            codec: "software".into(),
+        },
         (2_000_000, 500_000, 4_000_000),
     );
     let stream_id = wait_for(&mut bob_rx, |ev| match ev {

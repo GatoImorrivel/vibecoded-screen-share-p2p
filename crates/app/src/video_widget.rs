@@ -1,12 +1,13 @@
-//! Renders decoded I420 frames on the GPU: three single-channel textures per
-//! stream, converted to RGB in a fragment shader.
+//! Renders decoded YUV frames on the GPU: a luma texture plus either two
+//! chroma textures (I420) or one interleaved one (NV12) per stream, converted
+//! to RGB in a fragment shader.
 
 use iced::mouse;
 use iced::wgpu;
 use iced::widget::shader::{self, Viewport};
 use iced::{Element, Length, Rectangle};
 use parking_lot::Mutex;
-use screenshare_media::video::I420Frame;
+use screenshare_media::video::{YuvFrame, YuvLayout};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,23 +15,36 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Latest decoded frame of a stream, written by the decoder thread.
 #[derive(Default)]
 pub struct FrameSlot {
-    frame: Mutex<Option<Arc<I420Frame>>>,
+    frame: Mutex<Option<Arc<YuvFrame>>>,
     generation: AtomicU64,
+    decoder: Mutex<String>,
 }
 
 impl FrameSlot {
-    pub fn publish(&self, frame: Arc<I420Frame>) {
+    pub fn publish(&self, frame: Arc<YuvFrame>) {
         *self.frame.lock() = Some(frame);
         self.generation.fetch_add(1, Ordering::Release);
     }
 
-    pub fn latest(&self) -> (u64, Option<Arc<I420Frame>>) {
+    pub fn latest(&self) -> (u64, Option<Arc<YuvFrame>>) {
         let generation = self.generation.load(Ordering::Acquire);
         (generation, self.frame.lock().clone())
     }
 
     pub fn has_frame(&self) -> bool {
         self.frame.lock().is_some()
+    }
+
+    /// Backend that decoded the latest frame, e.g. "VAAPI" or "software".
+    pub fn decoder(&self) -> String {
+        self.decoder.lock().clone()
+    }
+
+    pub fn set_decoder(&self, name: &str) {
+        let mut decoder = self.decoder.lock();
+        if *decoder != name {
+            *decoder = name.to_string();
+        }
     }
 }
 
@@ -64,11 +78,12 @@ impl<Message> shader::Program<Message> for VideoProgram {
 pub struct VideoPrimitive {
     key: u64,
     generation: u64,
-    frame: Option<Arc<I420Frame>>,
+    frame: Option<Arc<YuvFrame>>,
 }
 
 struct Planes {
     size: (u32, u32),
+    layout: YuvLayout,
     textures: [wgpu::Texture; 3],
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -180,8 +195,14 @@ impl shader::Pipeline for VideoPipeline {
 }
 
 impl VideoPipeline {
-    fn create_planes(&self, device: &wgpu::Device, width: u32, height: u32) -> Planes {
-        let plane = |w: u32, h: u32| {
+    fn create_planes(
+        &self,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        layout: YuvLayout,
+    ) -> Planes {
+        let plane = |w: u32, h: u32, format| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("video plane"),
                 size: wgpu::Extent3d {
@@ -192,13 +213,26 @@ impl VideoPipeline {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R8Unorm,
+                format,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             })
         };
         let (cw, ch) = (width.div_ceil(2), height.div_ceil(2));
-        let textures = [plane(width, height), plane(cw, ch), plane(cw, ch)];
+        let r8 = wgpu::TextureFormat::R8Unorm;
+        let textures = match layout {
+            YuvLayout::I420 => [
+                plane(width, height, r8),
+                plane(cw, ch, r8),
+                plane(cw, ch, r8),
+            ],
+            // The third binding is unused for NV12 but must still be bound.
+            YuvLayout::Nv12 => [
+                plane(width, height, r8),
+                plane(cw, ch, wgpu::TextureFormat::Rg8Unorm),
+                plane(1, 1, r8),
+            ],
+        };
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("video uniforms"),
             size: 16,
@@ -237,6 +271,7 @@ impl VideoPipeline {
         });
         Planes {
             size: (width, height),
+            layout,
             textures,
             uniforms,
             bind_group,
@@ -246,8 +281,14 @@ impl VideoPipeline {
     }
 }
 
-fn upload(queue: &wgpu::Queue, texture: &wgpu::Texture, data: &[u8], width: u32, height: u32) {
-    if data.len() < (width * height) as usize {
+fn upload(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    data: &[u8],
+    (width, height): (u32, u32),
+    bytes_per_texel: u32,
+) {
+    if data.len() < (width * height * bytes_per_texel) as usize {
         return;
     }
     queue.write_texture(
@@ -260,7 +301,7 @@ fn upload(queue: &wgpu::Queue, texture: &wgpu::Texture, data: &[u8], width: u32,
         data,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(width),
+            bytes_per_row: Some(width * bytes_per_texel),
             rows_per_image: Some(height),
         },
         wgpu::Extent3d {
@@ -283,16 +324,17 @@ impl shader::Primitive for VideoPrimitive {
         _viewport: &Viewport,
     ) {
         let Some(frame) = &self.frame else { return };
-        if frame.width == 0 || frame.height == 0 {
+        let (width, height) = (frame.width(), frame.height());
+        if width == 0 || height == 0 {
             return;
         }
-        let size = (frame.width, frame.height);
+        let layout = frame.layout();
         if pipeline
             .streams
             .get(&self.key)
-            .is_none_or(|p| p.size != size)
+            .is_none_or(|p| p.size != (width, height) || p.layout != layout)
         {
-            let planes = pipeline.create_planes(device, frame.width, frame.height);
+            let planes = pipeline.create_planes(device, width, height, layout);
             pipeline.streams.insert(self.key, planes);
         }
         let linear_out = pipeline.linear_out;
@@ -301,26 +343,34 @@ impl shader::Primitive for VideoPrimitive {
         planes.last_used = now;
         if planes.generation != self.generation {
             planes.generation = self.generation;
-            let (cw, ch) = (frame.chroma_width(), frame.chroma_height());
-            upload(
-                queue,
-                &planes.textures[0],
-                &frame.y,
-                frame.width,
-                frame.height,
-            );
-            upload(queue, &planes.textures[1], &frame.u, cw, ch);
-            upload(queue, &planes.textures[2], &frame.v, cw, ch);
+            let chroma = (width.div_ceil(2), height.div_ceil(2));
+            match frame.as_ref() {
+                YuvFrame::I420(f) => {
+                    upload(queue, &planes.textures[0], &f.y, (width, height), 1);
+                    upload(queue, &planes.textures[1], &f.u, chroma, 1);
+                    upload(queue, &planes.textures[2], &f.v, chroma, 1);
+                }
+                YuvFrame::Nv12(f) => {
+                    upload(queue, &planes.textures[0], &f.y, (width, height), 1);
+                    upload(queue, &planes.textures[1], &f.uv, chroma, 2);
+                }
+            }
         }
 
-        let frame_aspect = frame.width as f32 / frame.height as f32;
+        let frame_aspect = width as f32 / height as f32;
         let bounds_aspect = bounds.width.max(1.0) / bounds.height.max(1.0);
         let scale = if frame_aspect > bounds_aspect {
             [1.0, bounds_aspect / frame_aspect]
         } else {
             [frame_aspect / bounds_aspect, 1.0]
         };
-        let uniforms = [scale[0], scale[1], if linear_out { 1.0 } else { 0.0 }, 0.0];
+        let flag = |on: bool| if on { 1.0f32 } else { 0.0 };
+        let uniforms = [
+            scale[0],
+            scale[1],
+            flag(linear_out),
+            flag(layout == YuvLayout::Nv12),
+        ];
         queue.write_buffer(&planes.uniforms, 0, bytemuck::cast_slice(&uniforms));
     }
 

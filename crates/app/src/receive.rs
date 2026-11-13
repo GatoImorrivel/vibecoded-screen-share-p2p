@@ -4,7 +4,7 @@ use crate::video_widget::FrameSlot;
 use crossbeam_channel::{RecvTimeoutError, Sender, TrySendError};
 use screenshare_media::audio::{AudioPlayer, OpusDecoder, PlaybackHandle};
 use screenshare_media::clock::SyncClock;
-use screenshare_media::video::H264Decoder;
+use screenshare_media::video::{Codec, open_decoder};
 use screenshare_net::{AudioPacket, PeerId, Session, VideoPacket};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,6 +29,8 @@ impl RemoteStream {
         peer: PeerId,
         stream_id: u64,
         player: Option<&AudioPlayer>,
+        hardware: bool,
+        codec: Codec,
     ) -> Self {
         let clock = SyncClock::new();
         let slot = Arc::new(FrameSlot::default());
@@ -44,10 +46,10 @@ impl RemoteStream {
             std::thread::Builder::new()
                 .name("recv-video".into())
                 .spawn(move || {
-                    let mut decoder = match H264Decoder::new() {
+                    let mut decoder = match open_decoder(hardware, codec) {
                         Ok(d) => d,
                         Err(err) => {
-                            tracing::error!("creating H.264 decoder failed: {err:#}");
+                            tracing::error!("creating {} decoder failed: {err:#}", codec.name());
                             return;
                         }
                     };
@@ -78,8 +80,9 @@ impl RemoteStream {
                         }
                         match decoder.decode(&packet.data, packet.header.pts_us) {
                             Ok(Some(frame)) => {
+                                slot.set_decoder(decoder.name());
                                 if let Some(audio) = clock.audio_pts() {
-                                    let ahead = frame.pts_us as i64 - audio;
+                                    let ahead = frame.pts_us() as i64 - audio;
                                     if ahead > 5_000 {
                                         let wait = ahead.min(MAX_SYNC_DELAY_US) as u64;
                                         std::thread::sleep(Duration::from_micros(wait));

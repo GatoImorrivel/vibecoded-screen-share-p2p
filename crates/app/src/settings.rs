@@ -19,6 +19,8 @@ pub struct Settings {
     /// Longest edge limit of the outgoing video, as a height (720, 1080, 1440, 2160).
     pub max_height: u32,
     pub max_bitrate_kbps: u32,
+    /// Encode and decode video on the GPU when possible.
+    pub hardware_video: bool,
 }
 
 impl Default for Settings {
@@ -30,6 +32,7 @@ impl Default for Settings {
             max_fps: 30,
             max_height: 1080,
             max_bitrate_kbps: 6000,
+            hardware_video: true,
         }
     }
 }

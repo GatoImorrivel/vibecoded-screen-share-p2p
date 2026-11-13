@@ -4,6 +4,8 @@
 #[cfg(feature = "codecs")]
 pub mod audio;
 pub mod clock;
+#[cfg(feature = "hw")]
+mod ffmpeg;
 pub mod video;
 
 /// Sample rate used for all audio inside the app.

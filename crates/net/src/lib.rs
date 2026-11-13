@@ -8,6 +8,6 @@ pub mod ticket;
 
 pub use iroh::EndpointId as PeerId;
 pub use media::{EncoderControl, ShareHandle};
-pub use protocol::{AudioPacket, ShareInfo, ShareKind, VideoPacket};
+pub use protocol::{AudioPacket, ShareDetails, ShareInfo, ShareKind, VideoPacket};
 pub use session::{NetEvent, Session};
 pub use ticket::Ticket;

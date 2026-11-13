@@ -2,7 +2,10 @@
 <!--
   WiX v3 source for the Windows installer. Build with:
     cargo install cargo-wix
-    cargo wix -p screenshareapp
+    cargo wix -p screenshareapp -C -dAvcodecDll=avcodec-62.dll -C -dAvutilDll=avutil-60.dll
+  after copying those FFmpeg DLLs next to the release exe (see .github/workflows/ci.yml).
+  Without the -d flags the installer omits them, and the exe will not start
+  unless it was built without the default "hw" feature (software video only).
 -->
 
 <?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64 ?>
@@ -50,6 +53,25 @@
                             Source='$(var.CargoTargetBinDir)\screenshareapp.exe'
                             KeyPath='yes'/>
                     </Component>
+                    <?ifdef AvcodecDll ?>
+                    <!-- FFmpeg (LGPL) for GPU video; names come from CI via -dAvcodecDll/-dAvutilDll. -->
+                    <Component Id='avcodec' Guid='*'>
+                        <File
+                            Id='avcodec'
+                            Name='$(var.AvcodecDll)'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\$(var.AvcodecDll)'
+                            KeyPath='yes'/>
+                    </Component>
+                    <Component Id='avutil' Guid='*'>
+                        <File
+                            Id='avutil'
+                            Name='$(var.AvutilDll)'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\$(var.AvutilDll)'
+                            KeyPath='yes'/>
+                    </Component>
+                    <?endif ?>
                 </Directory>
             </Directory>
             <Directory Id='ProgramMenuFolder'>
@@ -84,6 +106,10 @@
             Display='expand'
             Absent='disallow'>
             <ComponentRef Id='binary0'/>
+            <?ifdef AvcodecDll ?>
+            <ComponentRef Id='avcodec'/>
+            <ComponentRef Id='avutil'/>
+            <?endif ?>
             <ComponentRef Id='StartMenuShortcut'/>
         </Feature>
 

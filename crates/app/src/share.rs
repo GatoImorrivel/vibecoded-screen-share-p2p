@@ -1,4 +1,5 @@
-//! Our outgoing share: capture → I420 → H.264 for video, capture → Opus for audio.
+//! Our outgoing share: capture → YUV → H.264 (GPU or software) for video,
+//! capture → Opus for audio.
 
 use bytes::Bytes;
 use crossbeam_channel::RecvTimeoutError;
@@ -6,7 +7,10 @@ use parking_lot::Mutex;
 use screenshare_capture::{AudioTarget, VideoCapture};
 use screenshare_media::audio::OpusEncoder;
 use screenshare_media::clock::now_us;
-use screenshare_media::video::{H264Encoder, RawFrame, convert_to_i420, fit_dimensions};
+use screenshare_media::video::{
+    Codec, EncoderPrefs, RawFrame, SoftwareEncoder, VideoEncoder, convert_frame, fit_dimensions,
+    open_encoder,
+};
 use screenshare_net::protocol::VideoHeader;
 use screenshare_net::{EncoderControl, ShareHandle, VideoPacket};
 use std::sync::Arc;
@@ -25,6 +29,10 @@ pub struct ShareConfig {
     pub max_fps: u32,
     pub max_size: (u32, u32),
     pub max_bitrate: u32,
+    /// Prefer a GPU encoder when one is available.
+    pub hardware: bool,
+    /// Video codec to encode with.
+    pub codec: Codec,
 }
 
 impl ShareConfig {
@@ -129,7 +137,8 @@ fn video_loop(
 ) -> bool {
     let fps = config.max_fps.clamp(1, 120);
     let (mut bitrate, _, max_bitrate) = config.bitrates();
-    let mut encoder: Option<(H264Encoder, (u32, u32))> = None;
+    let mut hardware = config.hardware;
+    let mut encoder: Option<(Box<dyn VideoEncoder>, (u32, u32))> = None;
     let mut last: Option<RawFrame> = None;
     let mut last_sent = Instant::now() - REFRESH;
     let mut want_keyframe = false;
@@ -181,10 +190,20 @@ fn video_loop(
             continue;
         }
         if encoder.as_ref().is_none_or(|(_, size)| *size != (w, h)) {
-            match H264Encoder::new(bitrate, fps as f32) {
+            // Release the old GPU session first; consumer GPUs allow only a few.
+            drop(encoder.take());
+            let prefs = EncoderPrefs {
+                hardware,
+                codec: config.codec,
+                width: w,
+                height: h,
+                fps,
+                bitrate,
+            };
+            match open_encoder(prefs) {
                 Ok(enc) => encoder = Some((enc, (w, h))),
                 Err(err) => {
-                    tracing::error!("creating H.264 encoder failed: {err:#}");
+                    tracing::error!("creating {} encoder failed: {err:#}", config.codec.name());
                     return true;
                 }
             }
@@ -194,11 +213,11 @@ fn video_loop(
             enc.request_keyframe();
             want_keyframe = false;
         }
-        let mut i420 = convert_to_i420(raw, w, h);
+        let mut yuv = convert_frame(raw, w, h, enc.input_layout());
         if !fresh {
-            i420.pts_us = now_us();
+            yuv.set_pts_us(now_us());
         }
-        match enc.encode(&i420) {
+        match enc.encode(&yuv) {
             Ok(Some(frame)) => {
                 handle.send_video(VideoPacket {
                     header: VideoHeader {
@@ -214,7 +233,11 @@ fn video_loop(
             }
             Ok(None) => {}
             Err(err) => {
-                tracing::warn!("H.264 encode failed: {err:#}");
+                tracing::warn!("{} encode failed: {err:#}", enc.name());
+                if enc.name() != SoftwareEncoder::NAME {
+                    tracing::warn!("falling back to software encoding for this share");
+                    hardware = false;
+                }
                 encoder = None;
             }
         }

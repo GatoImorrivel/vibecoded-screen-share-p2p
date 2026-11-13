@@ -14,9 +14,14 @@ eula = false
 name = "screenshareapp"
 path = "src/main.rs"
 
+[features]
+default = ["hw"]
+# GPU video encode/decode through FFmpeg; see crates/media.
+hw = ["screenshare-media/hw"]
+
 [dependencies]
 screenshare-net.workspace = true
-screenshare-media.workspace = true
+screenshare-media = { workspace = true, default-features = false, features = ["codecs"] }
 screenshare-capture.workspace = true
 anyhow.workspace = true
 tracing.workspace = true

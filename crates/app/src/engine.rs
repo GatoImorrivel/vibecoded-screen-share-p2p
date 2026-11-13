@@ -8,7 +8,8 @@ use iced::futures::Stream;
 use parking_lot::Mutex;
 use screenshare_capture::{AudioApp, AudioTarget, SourceKind, VideoRequest};
 use screenshare_media::audio::AudioPlayer;
-use screenshare_net::{NetEvent, PeerId, Session, ShareInfo, ShareKind, Ticket};
+use screenshare_media::video::{Codec, encoder_backend};
+use screenshare_net::{NetEvent, PeerId, Session, ShareDetails, ShareInfo, ShareKind, Ticket};
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, OnceLock};
@@ -47,6 +48,8 @@ pub enum AudioMode {
 pub struct ShareStarted {
     pub kind: ShareKind,
     pub title: String,
+    /// Video encoder backend, e.g. "NVENC" or "software".
+    pub encoder: String,
     /// The window's owning app is unknown (portal); the UI should ask which app to capture.
     pub needs_audio_app: bool,
     pub audio_error: Option<String>,
@@ -164,7 +167,14 @@ impl Engine {
     }
 
     /// Starts receiving `peer`'s stream; returns where its frames appear.
-    pub fn watch(&self, peer: PeerId, stream_id: u64) -> Option<Arc<FrameSlot>> {
+    /// `hardware` prefers GPU decoding when available.
+    pub fn watch(
+        &self,
+        peer: PeerId,
+        stream_id: u64,
+        hardware: bool,
+        codec: Codec,
+    ) -> Option<Arc<FrameSlot>> {
         let mut s = self.state.lock();
         let session = s.session.clone()?;
         if let Some(existing) = s.remote.get(&peer) {
@@ -173,7 +183,14 @@ impl Engine {
             }
             session.unsubscribe(peer, existing.stream_id);
         }
-        let stream = RemoteStream::start(session.clone(), peer, stream_id, Some(&self.player));
+        let stream = RemoteStream::start(
+            session.clone(),
+            peer,
+            stream_id,
+            Some(&self.player),
+            hardware,
+            codec,
+        );
         let slot = stream.slot.clone();
         s.remote.insert(peer, stream);
         let _guard = self.rt.enter();
@@ -234,14 +251,20 @@ impl Engine {
                 };
                 let needs_audio_app = audio == AudioMode::Auto && target.is_none();
                 let has_audio = audio == AudioMode::Auto;
+                // Probes the GPU encoders the first time; the video thread then
+                // opens the same backend.
+                let encoder = encoder_backend(config.hardware, config.codec).to_string();
                 let handle = {
                     let _guard = rt.enter();
                     session.start_share(
-                        kind,
-                        title.clone(),
-                        capture.width,
-                        capture.height,
-                        has_audio,
+                        ShareDetails {
+                            kind,
+                            title: title.clone(),
+                            width: capture.width,
+                            height: capture.height,
+                            has_audio,
+                            codec: encoder.clone(),
+                        },
                         config.bitrates(),
                     )
                 };
@@ -256,6 +279,7 @@ impl Engine {
                 Ok(ShareStarted {
                     kind,
                     title,
+                    encoder,
                     needs_audio_app,
                     audio_error,
                 })

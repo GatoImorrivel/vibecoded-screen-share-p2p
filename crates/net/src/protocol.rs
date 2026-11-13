@@ -4,7 +4,7 @@ use iroh::endpoint::{RecvStream, SendStream};
 use iroh::{EndpointAddr, PublicKey, SecretKey, Signature};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub const MEDIA_ALPN: &[u8] = b"screenshare/media/1";
+pub const MEDIA_ALPN: &[u8] = b"screenshare/media/2";
 
 /// Largest encoded video frame accepted from a peer.
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
@@ -25,6 +25,20 @@ pub struct ShareInfo {
     pub width: u32,
     pub height: u32,
     pub has_audio: bool,
+    /// Video encoder backend, e.g. "NVENC" or "software". Informational; the
+    /// bitstream is always H.264.
+    pub codec: String,
+}
+
+/// What a new share announces; see [`crate::Session::start_share`].
+#[derive(Debug, Clone)]
+pub struct ShareDetails {
+    pub kind: ShareKind,
+    pub title: String,
+    pub width: u32,
+    pub height: u32,
+    pub has_audio: bool,
+    pub codec: String,
 }
 
 /// Presence broadcast over gossip on join, on change and as a heartbeat.

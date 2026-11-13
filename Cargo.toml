@@ -30,6 +30,7 @@ iroh = "1.4"
 iroh-gossip = "0.102"
 n0-future = "0.3"
 openh264 = "0.9"
+ffmpeg-sys-next = { version = "9", default-features = false, features = ["avcodec"] }
 opus = "0.4"
 cpal = "0.18"
 directories = "6"

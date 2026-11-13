@@ -30,6 +30,21 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+fn encoding_label(backend: &str) -> String {
+    match backend {
+        "" => String::new(),
+        "software" => "CPU encode".into(),
+        gpu => gpu.to_string(),
+    }
+}
+
+fn decoding_label(backend: &str) -> String {
+    match backend {
+        "software" => "CPU decode".into(),
+        gpu => gpu.to_string(),
+    }
+}
+
 fn btn<'a>(label: &'a str) -> button::Button<'a, Message> {
     button(text(label).size(14)).padding([7, 14])
 }
@@ -216,7 +231,7 @@ impl App {
                 .padding(10)
                 .width(Length::Fill)
                 .into(),
-            MyShare::Live { kind, .. } => {
+            MyShare::Live { kind, encoder, .. } => {
                 let what = match kind {
                     ShareKind::Monitor => "screen",
                     ShareKind::Window => "window",
@@ -224,7 +239,9 @@ impl App {
                 column![
                     row![
                         text("●").size(10).style(theme::live_text),
-                        text(format!("Sharing your {what}")).size(13)
+                        text(format!("Sharing your {what}")).size(13),
+                        space::horizontal(),
+                        muted(encoding_label(encoder)).size(12),
                     ]
                     .spacing(6)
                     .align_y(Alignment::Center),
@@ -363,10 +380,16 @@ impl App {
     fn tile<'a>(&'a self, session: &'a SessionView, w: &'a Watch, focused: bool) -> El<'a> {
         let peer = session.peers.get(&w.peer);
         let name = peer.map(|p| p.nickname.as_str()).unwrap_or("?");
-        let title = peer
-            .and_then(|p| p.share.as_ref())
-            .map(|s| s.title.as_str())
-            .unwrap_or_default();
+        let share = peer.and_then(|p| p.share.as_ref());
+        let title = share.map(|s| s.title.as_str()).unwrap_or_default();
+        let decoder = w.slot.decoder();
+        let pipeline = match (share.map(|s| s.codec.as_str()), decoder.is_empty()) {
+            (Some(codec), false) => {
+                format!("{} → {}", encoding_label(codec), decoding_label(&decoder))
+            }
+            (Some(codec), true) => encoding_label(codec),
+            (None, _) => String::new(),
+        };
 
         let picture: El<'a> = if w.slot.has_frame() {
             video(w.stream_id, w.slot.clone())
@@ -395,6 +418,7 @@ impl App {
                 muted(truncate(title, 40))
                     .size(12)
                     .wrapping(text::Wrapping::None),
+                muted(pipeline).size(11).wrapping(text::Wrapping::None),
             ]
             .spacing(6)
             .align_y(Alignment::Center),
@@ -597,7 +621,12 @@ impl App {
                 s.max_bitrate_kbps,
                 Message::SetBitrate
             ),
-            muted("Video changes apply to your next share.").size(12),
+            checkbox(s.hardware_video)
+                .label("Use the GPU to encode and decode video")
+                .text_size(13)
+                .style(theme::check)
+                .on_toggle(Message::SetHardwareVideo),
+            muted("Video changes apply to your next share or newly opened streams.").size(12),
             row![
                 space::horizontal(),
                 btn("Done")

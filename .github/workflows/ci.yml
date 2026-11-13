@@ -23,11 +23,40 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang cmake pkg-config \
+            clang cmake pkg-config nasm \
             libpipewire-0.3-dev libspa-0.2-dev libasound2-dev \
             libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxrandr-dev \
             libgbm-dev libdrm-dev libegl1-mesa-dev libwayland-dev libxkbcommon-dev \
             libdbus-1-dev
+
+      # nasm so openh264 builds its assembly (otherwise it's ~2x slower).
+      - name: Install nasm (Windows)
+        if: runner.os == 'Windows'
+        run: choco install nasm -y
+
+      # LGPL shared FFmpeg for GPU video (NVENC, AMF, Quick Sync, VAAPI, ...).
+      # Its libraries ship inside the MSI, portable zip and AppImage. On Linux,
+      # libva and the GPU drivers are loaded from the user's system at runtime.
+      - name: Fetch FFmpeg
+        shell: bash
+        run: |
+          base=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest
+          dir="$RUNNER_TEMP/ffmpeg"
+          mkdir -p "$dir"
+          if [ "$RUNNER_OS" = Windows ]; then
+            curl -fsSL -o "$RUNNER_TEMP/ffmpeg.zip" "$base/ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip"
+            unzip -q "$RUNNER_TEMP/ffmpeg.zip" -d "$RUNNER_TEMP/ffmpeg-unpack"
+            mv "$RUNNER_TEMP"/ffmpeg-unpack/*/* "$dir"
+            echo "$dir/bin" >> "$GITHUB_PATH"
+            echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
+          else
+            curl -fsSL "$base/ffmpeg-n8.1-latest-linux64-lgpl-shared-8.1.tar.xz" \
+              | tar -xJ -C "$dir" --strip-components=1
+            echo "LD_LIBRARY_PATH=$dir/lib" >> "$GITHUB_ENV"
+            # Other -sys crates add the system library dir; search ours first.
+            echo "RUSTFLAGS=-L native=$dir/lib" >> "$GITHUB_ENV"
+          fi
+          echo "FFMPEG_DIR=$dir" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -47,11 +76,22 @@ jobs:
       - name: Build release
         run: cargo build --release --locked -p screenshareapp
 
-      - name: Build MSI
+      - name: Build MSI and portable zip
         if: runner.os == 'Windows'
+        shell: bash
         run: |
+          avcodec=$(cd "$FFMPEG_DIR/bin" && ls avcodec-*.dll)
+          avutil=$(cd "$FFMPEG_DIR/bin" && ls avutil-*.dll)
+          cp "$FFMPEG_DIR/bin/$avcodec" "$FFMPEG_DIR/bin/$avutil" target/release/
           cargo install cargo-wix --locked
-          cargo wix -p screenshareapp --no-build --nocapture --output target/wix/screenshare.msi
+          cargo wix -p screenshareapp --no-build --nocapture \
+            -C "-dAvcodecDll=$avcodec" -C "-dAvutilDll=$avutil" \
+            --output target/wix/screenshare.msi
+          mkdir -p target/portable/screenshare
+          cp target/release/screenshareapp.exe target/release/$avcodec target/release/$avutil \
+            target/portable/screenshare/
+          cp "$FFMPEG_DIR/LICENSE.txt" target/portable/screenshare/FFMPEG-LICENSE.txt
+          (cd target/portable && 7z a -bd screenshare-windows-portable.zip screenshare >/dev/null)
 
       - name: Build AppImage
         if: runner.os == 'Linux'
@@ -64,7 +104,7 @@ jobs:
         with:
           name: screenshare-${{ runner.os }}
           path: |
-            target/release/screenshareapp.exe
+            target/portable/*.zip
             target/wix/*.msi
             target/appimage/*.AppImage
           if-no-files-found: ignore
@@ -85,4 +125,4 @@ jobs:
           files: |
             dist/**/*.msi
             dist/**/*.AppImage
-            dist/**/*.exe
+            dist/**/*.zip
